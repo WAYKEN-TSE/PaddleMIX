@@ -33,12 +33,13 @@ from paddlenlp.transformers.model_outputs import (
 )
 from paddlenlp.transformers.model_utils import PretrainedModel
 
+from paddlemix.models.flash_attn_utils import has_flash_attn_func
 from paddlemix.utils.initializer import _calculate_fan_in_and_fan_out
 
 from .bert_padding import pad_input, unpad_input
-from paddlemix.models.flash_attn_utils import has_flash_attn_func
 
 flash_attn_func, flash_attn_varlen_func = has_flash_attn_func()
+
 
 @dataclass
 class PaddleAttentionMaskConverter:
@@ -104,7 +105,7 @@ class SigLipVisionConfig(PretrainedConfig):
         hidden_act="gelu",
         layer_norm_eps=1e-06,
         attention_dropout=0.0,
-        _attn_implementation="eager", 
+        _attn_implementation="eager",
         **kwargs
     ):
         super().__init__(**kwargs)

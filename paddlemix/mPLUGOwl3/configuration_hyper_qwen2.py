@@ -1,3 +1,17 @@
+# Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import paddlenlp
 from paddlenlp.transformers import PretrainedConfig
 
@@ -69,17 +83,33 @@ class HyperQwen2Config(PretrainedConfig):
     >>> # Accessing the model configuration
     >>> configuration = model.config
     ```"""
-    model_type = 'qwen2'
-    keys_to_ignore_at_inference = ['past_key_values']
 
-    def __init__(self, vocab_size=151936, hidden_size=4096,
-        intermediate_size=22016, num_hidden_layers=32, num_attention_heads=
-        32, num_key_value_heads=32, hidden_act='silu',
-        max_position_embeddings=32768, initializer_range=0.02, rms_norm_eps
-        =1e-06, use_cache=True, tie_word_embeddings=False, rope_theta=
-        10000.0, use_sliding_window=False, sliding_window=4096,
-        max_window_layers=28, attention_dropout=0.0, hyper_layers=[1, 9, 17,
-        25], _attn_implementation="sdpa",**kwargs):
+    model_type = "qwen2"
+    keys_to_ignore_at_inference = ["past_key_values"]
+
+    def __init__(
+        self,
+        vocab_size=151936,
+        hidden_size=4096,
+        intermediate_size=22016,
+        num_hidden_layers=32,
+        num_attention_heads=32,
+        num_key_value_heads=32,
+        hidden_act="silu",
+        max_position_embeddings=32768,
+        initializer_range=0.02,
+        rms_norm_eps=1e-06,
+        use_cache=True,
+        tie_word_embeddings=False,
+        rope_theta=10000.0,
+        use_sliding_window=False,
+        sliding_window=4096,
+        max_window_layers=28,
+        attention_dropout=0.0,
+        hyper_layers=[1, 9, 17, 25],
+        _attn_implementation="sdpa",
+        **kwargs
+    ):
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size

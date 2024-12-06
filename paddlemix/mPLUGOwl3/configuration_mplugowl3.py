@@ -1,35 +1,59 @@
+# Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
+
 import paddlenlp
+
 """ mPLUGOwl3 model configuration"""
 # from paddlenlp.transformers import PretrainedConfig, Qwen2Config
 from typing import Union
-from .configuration_hyper_qwen2 import HyperQwen2Config
+
 # logger = paddle.utils.try_import('logging').getLogger(name=__name__)
 from paddlemix.utils.log import logger
+
+from .configuration_hyper_qwen2 import HyperQwen2Config
 from .modeling_navit_siglip import SigLipVisionConfig
 
 
 class mPLUGOwl3Config(HyperQwen2Config):
-    model_type = 'mplugowl3'
-    keys_to_ignore_at_inference = ['past_key_values']
-    default_vision_config = {'hidden_size': 1152, 'image_size': 384,
-        'intermediate_size': 4304, 'model_type': 'siglip_vision_model',
-        'num_attention_heads': 16, 'num_hidden_layers': 27, 'patch_size': 14}
+    model_type = "mplugowl3"
+    keys_to_ignore_at_inference = ["past_key_values"]
+    default_vision_config = {
+        "hidden_size": 1152,
+        "image_size": 384,
+        "intermediate_size": 4304,
+        "model_type": "siglip_vision_model",
+        "num_attention_heads": 16,
+        "num_hidden_layers": 27,
+        "patch_size": 14,
+    }
 
     def __init__(self, use_cache=True, vision_config=None, **kwargs):
         self.use_cache = use_cache
         if vision_config is None:
-# >>>>>>            self.vision_config = (transformers.models.siglip.
-#                 configuration_siglip.SiglipVisionConfig(**self.
-#                 default_vision_config))
+            # >>>>>>            self.vision_config = (transformers.models.siglip.
+            #                 configuration_siglip.SiglipVisionConfig(**self.
+            #                 default_vision_config))
             self.vision_config = SigLipVisionConfig(**self.default_vision_config)
-            logger.info('vision_config is None, using default vision config')
+            logger.info("vision_config is None, using default vision config")
         elif isinstance(vision_config, dict):
-# >>>>>>            self.vision_config = (transformers.models.siglip.
-                # configuration_siglip.SiglipVisionConfig(**vision_config))
+            # >>>>>>            self.vision_config = (transformers.models.siglip.
+            # configuration_siglip.SiglipVisionConfig(**vision_config))
             self.vision_config = SigLipVisionConfig(**vision_config)
-# >>>>>>        elif isinstance(vision_config, transformers.models.siglip.
-#             configuration_siglip.SiglipVisionConfig):
+        # >>>>>>        elif isinstance(vision_config, transformers.models.siglip.
+        #             configuration_siglip.SiglipVisionConfig):
         elif isinstance(vision_config, SigLipVisionConfig):
             self.vision_config = vision_config
         self.image_size = self.vision_config.image_size
