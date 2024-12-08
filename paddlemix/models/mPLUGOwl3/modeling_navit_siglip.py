@@ -742,55 +742,55 @@ class SigLipEncoder(nn.Layer):
         )
 
 
-# Copied from transformers.models.llama.modeling_llama._prepare_4d_causal_attention_mask_with_cache_position
-def _prepare_4d_causal_attention_mask_with_cache_position(
-    attention_mask: paddle.Tensor,
-    sequence_length: int,
-    target_length: int,
-    dtype: paddle.dtype,
-    min_dtype: float,
-    cache_position: paddle.Tensor,
-    batch_size: int,
-):
-    """
-    Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
-    `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
+# # Copied from transformers.models.llama.modeling_llama._prepare_4d_causal_attention_mask_with_cache_position
+# def _prepare_4d_causal_attention_mask_with_cache_position(
+#     attention_mask: paddle.Tensor,
+#     sequence_length: int,
+#     target_length: int,
+#     dtype: paddle.dtype,
+#     min_dtype: float,
+#     cache_position: paddle.Tensor,
+#     batch_size: int,
+# ):
+#     """
+#     Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
+#     `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
 
-    Args:
-        attention_mask (`paddle.Tensor`):
-            A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape `(batch_size, 1, query_length, key_value_length)`.
-        sequence_length (`int`):
-            The sequence length being processed.
-        target_length (`int`):
-            The target length: when generating with static cache, the mask should be as long as the static cache, to account for the 0 padding, the part of the cache that is not filled yet.
-        dtype (`paddle.dtype`):
-            The dtype to use for the 4D attention mask.
-        min_dtype (`float`):
-            The minimum value representable with the dtype `dtype`.
-        cache_position (`paddle.Tensor`):
-            Indices depicting the position of the input sequence tokens in the sequence.
-        batch_size (`paddle.Tensor`):
-            Batch size.
-    """
-    if attention_mask is not None and attention_mask.dim() == 4:
-        # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-        causal_mask = attention_mask
-    else:
-        causal_mask = paddle.full([sequence_length, target_length], fill_value=min_dtype, dtype=dtype)
-        if sequence_length != 1:
-            causal_mask = paddle.triu(x=causal_mask, diagonal=1)
-        causal_mask *= paddle.arange(target_length) > cache_position.reshape([-1, 1])
-        causal_mask = causal_mask[None, None, :, :].expand(shape=[batch_size, 1, -1, -1])
-        if attention_mask is not None:
-            causal_mask = causal_mask.clone()
-            mask_length = tuple(attention_mask.shape)[-1]
-            padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
-            padding_mask = padding_mask == 0
-            causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                mask=padding_mask, value=min_dtype
-            )
+#     Args:
+#         attention_mask (`paddle.Tensor`):
+#             A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape `(batch_size, 1, query_length, key_value_length)`.
+#         sequence_length (`int`):
+#             The sequence length being processed.
+#         target_length (`int`):
+#             The target length: when generating with static cache, the mask should be as long as the static cache, to account for the 0 padding, the part of the cache that is not filled yet.
+#         dtype (`paddle.dtype`):
+#             The dtype to use for the 4D attention mask.
+#         min_dtype (`float`):
+#             The minimum value representable with the dtype `dtype`.
+#         cache_position (`paddle.Tensor`):
+#             Indices depicting the position of the input sequence tokens in the sequence.
+#         batch_size (`paddle.Tensor`):
+#             Batch size.
+#     """
+#     if attention_mask is not None and attention_mask.dim() == 4:
+#         # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
+#         causal_mask = attention_mask
+#     else:
+#         causal_mask = paddle.full([sequence_length, target_length], fill_value=min_dtype, dtype=dtype)
+#         if sequence_length != 1:
+#             causal_mask = paddle.triu(x=causal_mask, diagonal=1)
+#         causal_mask *= paddle.arange(target_length) > cache_position.reshape([-1, 1])
+#         causal_mask = causal_mask[None, None, :, :].expand(shape=[batch_size, 1, -1, -1])
+#         if attention_mask is not None:
+#             causal_mask = causal_mask.clone()
+#             mask_length = tuple(attention_mask.shape)[-1]
+#             padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
+#             padding_mask = padding_mask == 0
+#             causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
+#                 mask=padding_mask, value=min_dtype
+#             )
 
-    return causal_mask
+#     return causal_mask
 
 
 class SigLipVisionTransformer(SigLipPreTrainedModel):

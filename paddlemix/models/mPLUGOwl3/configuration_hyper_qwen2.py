@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import paddlenlp
 from paddlenlp.transformers import PretrainedConfig
 
 
-# >>>>>>class HyperQwen2Config(transformers.configuration_utils.PretrainedConfig):
 class HyperQwen2Config(PretrainedConfig):
     """
     This is the configuration class to store the configuration of a [`Qwen2Model`]. It is used to instantiate a
@@ -98,7 +96,7 @@ class HyperQwen2Config(PretrainedConfig):
         hidden_act="silu",
         max_position_embeddings=32768,
         initializer_range=0.02,
-        rms_norm_eps=1e-06,
+        rms_norm_eps=1e-6,
         use_cache=True,
         tie_word_embeddings=False,
         rope_theta=10000.0,
@@ -106,9 +104,10 @@ class HyperQwen2Config(PretrainedConfig):
         sliding_window=4096,
         max_window_layers=28,
         attention_dropout=0.0,
-        hyper_layers=[1, 9, 17, 25],
-        _attn_implementation="sdpa",
-        **kwargs
+        hyper_layers=[1,9,17,25],
+        vision_batch_size=16,
+        rope_scaling=None,
+        **kwargs,
     ):
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
@@ -119,8 +118,13 @@ class HyperQwen2Config(PretrainedConfig):
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window if use_sliding_window else None
         self.max_window_layers = max_window_layers
+        self.rope_scaling = rope_scaling
+        if self.rope_scaling is not None and "type" in self.rope_scaling:
+            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
+        # for backward compatibility
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
+
         self.num_key_value_heads = num_key_value_heads
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
@@ -129,5 +133,9 @@ class HyperQwen2Config(PretrainedConfig):
         self.rope_theta = rope_theta
         self.attention_dropout = attention_dropout
         self.hyper_layers = hyper_layers
-        self._attn_implementation = _attn_implementation
-        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
+        self.vision_batch_size = vision_batch_size
+        self.seq_length = 1 #self.max_length ###
+        super().__init__(
+            tie_word_embeddings=tie_word_embeddings,
+            **kwargs,
+        )
