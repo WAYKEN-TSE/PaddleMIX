@@ -12,18 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-import math
-from copy import deepcopy
 from threading import Thread
-from typing import List, Optional
 
 import paddle
 import paddle.nn as nn
 import paddlenlp
 from paddlenlp.generation import TextIteratorStreamer
-from paddlenlp.transformers import Qwen2ForCausalLM, Qwen2PretrainedModel
-from PIL import Image
+from paddlenlp.transformers import Qwen2PretrainedModel
 
 from .configuration_mplugowl3 import mPLUGOwl3Config
 from .image_processing_mplugowl3 import mPLUGOwl3ImageProcessor
@@ -117,17 +112,24 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
     
     def _decode(self, input_ids, image_embeds, media_offset, tokenizer, attention_mask, decode_text=False, **kwargs):
         terminators = [tokenizer.convert_tokens_to_ids(i) for i in self.terminators]
+        
+        # ###  must add position_ids, paddlenlp bug
+        # batch_size, seq_length = attention_mask.shape
+        # position_ids = paddle.arange(seq_length).expand((batch_size, seq_length))
+        # ###
+        
         output = self.language_model.generate(
             input_ids=input_ids,
             image_embeds=image_embeds,
             media_offset=media_offset,
             pad_token_id=0,
             eos_token_id=terminators,
+            #position_ids=position_ids,  ####
             attention_mask=attention_mask,
             **kwargs,
         )[0]
-        output = output[:,input_ids.shape[1]:]
-        print('output', output)
+        #output = output[:,input_ids.shape[1]:] # paddle no need this
+        print('_decode output', output)
         if decode_text:
             return self._decode_text(output, tokenizer)
         return output
@@ -238,7 +240,7 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
         generation_config.update(
             (k, kwargs[k]) for k in generation_config.keys() & kwargs.keys()
         )
-        with paddle.inference_mode():
+        with paddle.no_grad():
             res = self.generate(
                 **inputs,
                 stream=stream,

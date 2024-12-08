@@ -21,48 +21,54 @@ from typing import List, Optional, Tuple, Union
 
 from einops import rearrange, repeat
 
-# from paddlemix.models.flash_attn_utils import (
-#     has_flash_attn_func,
-#     is_flash_attn_available,
-# )
-
-#from .activations import ACT2FN
 from ...activations import ACT2FN
-from .bert_padding import index_first_axis, pad_input, unpad_input
 from .configuration_hyper_qwen2 import HyperQwen2Config
-
-# if is_flash_attn_available():
-#     flash_attn_func, flash_attn_varlen_func = has_flash_attn_func()
-#     _flash_supports_window_size = "window_size" in list(inspect.signature(flash_attn_func).parameters)
-# # >>>>>>if transformers.utils.is_flash_attn_2_available():
-# #     pass
-# #     _flash_supports_window_size = 'window_size' in list(inspect.signature(
-# #         flash_attn_func).parameters)
-
-# from .x_sdpa import ScaleDotProductAttention
 
 try:
     from einops import rearrange
-
     use_flash_rotary = True
     print("use flash_attn rotary")
 except ImportError:
     use_flash_rotary = False
     print("import flash_attn rotary fail")
-logger = paddle.utils.try_import("logging").getLogger(name=__name__)
-# _CHECKPOINT_FOR_DOC = "Qwen/Qwen2-7B-beta"
-# _CONFIG_FOR_DOC = "HyperQwen2Config"
+from paddlemix.utils.log import logger
 
 
-# def _get_unpad_data(attention_mask):
-#     seqlens_in_batch = attention_mask.sum(axis=-1, dtype="int32")
-#     paddle.utils.try_import("warnings").warn("Now, the return shape is inconsistent with torch when as_tuple is True")
-#     indices = paddle.nonzero(x=attention_mask.flatten(), as_tuple=False).flatten()
-#     max_seqlen_in_batch = seqlens_in_batch.max().item()
-#     cu_seqlens = paddle.nn.functional.pad(
-#         x=paddle.cumsum(x=seqlens_in_batch, axis=0, dtype="int32"), pad=(1, 0), pad_from_left_axis=False
-#     )
-#     return indices, cu_seqlens, max_seqlen_in_batch
+def is_casual_mask(attention_mask):
+    """
+    Upper triangular of attention_mask equals to attention_mask is casual
+    """
+    return (paddle.triu(attention_mask) == attention_mask).all().item()
+
+
+def _make_causal_mask(input_ids_shape, past_key_values_length):
+    """
+    Make causal mask used for self-attention
+    """
+    batch_size, target_length = input_ids_shape  # target_length: seq_len
+
+    mask = paddle.tril(paddle.ones((target_length, target_length), dtype="bool"))
+
+    if past_key_values_length > 0:
+        # [tgt_len, tgt_len + past_len]
+        mask = paddle.concat([paddle.ones([target_length, past_key_values_length], dtype="bool"), mask], axis=-1)
+
+    # [bs, 1, tgt_len, tgt_len + past_len]
+    return mask[None, None, :, :].expand([batch_size, 1, target_length, target_length + past_key_values_length])
+
+
+def _expand_2d_mask(mask, dtype, tgt_length):
+    """
+    Expands attention_mask from `[batch_size, src_length]` to `[batch_size, 1, tgt_length, src_length]`.
+    """
+    batch_size, src_length = mask.shape[0], mask.shape[-1]
+    tgt_length = tgt_length if tgt_length is not None else src_length
+
+    mask = mask[:, None, None, :].astype("bool")
+    mask.stop_gradient = True
+    expanded_mask = mask.expand([batch_size, 1, tgt_length, src_length])
+
+    return expanded_mask
 
 
 class Qwen2RMSNorm(paddle.nn.Layer):
@@ -235,15 +241,15 @@ def apply_rotary_pos_emb_core(t, freqs, use_fp32=False, debug=False):
     rotary positional embeding tensor freqs is of shape [seq_length, ..., dim]
     check https://kexue.fm/archives/8265 for detailed formulas
     """
-    if use_flash_rotary and use_fp32:
-        t_ = rearrange(t, "s b ... -> b s ...")
-        if use_fp32:
-            t_ = t_.astype(dtype="float32")
-        freqs = freqs.squeeze(axis=1).squeeze(axis=1)
-        cos = freqs[:, :freqs.shape[-1] // 2].cos()
-        sin = freqs[:, :freqs.shape[-1] // 2].sin()
-        output = apply_rotary_emb_func(t_, cos, sin).astype(dtype=t.dtype) # TODO
-        return rearrange(output, 'b s ... -> s b ...')
+    # if use_flash_rotary and use_fp32:
+    #     t_ = rearrange(t, "s b ... -> b s ...")
+    #     if use_fp32:
+    #         t_ = t_.astype(dtype="float32")
+    #     freqs = freqs.squeeze(axis=1).squeeze(axis=1)
+    #     cos = freqs[:, :freqs.shape[-1] // 2].cos()
+    #     sin = freqs[:, :freqs.shape[-1] // 2].sin()
+    #     output = apply_rotary_emb_func(t_, cos, sin).astype(dtype=t.dtype) # TODO
+    #     return rearrange(output, 'b s ... -> s b ...')
 
     rot_dim = freqs.shape[-1]
     # ideally t_pass is empty so rotary pos embedding is applied to all tensor t
@@ -337,22 +343,6 @@ class HyperQwen2Attention(nn.Layer):
         return key_layer
 
 
-# def hyper_mask_always_true(b, h, q_idx, kv_idx):
-#     return q_idx>=0
-
-# def causal(b, h, q_idx, kv_idx):
-#     return q_idx >= kv_idx
-
-
-# def create_hyper_attention(media_starts_extend, q_len, kv_len, each_visual_len):
-    
-#     visual_len = kv_len - q_len
-#     def hyper_mask_dynamic(b, h, q_idx, kv_idx):
-#         return torch.where(kv_idx<visual_len, q_idx>=media_starts_extend[kv_idx], causal(b, h, q_idx, kv_idx-visual_len))
-    
-#     return create_block_mask(hyper_mask_dynamic, B=None, H=None, Q_LEN=q_len, KV_LEN=kv_len, BLOCK_SIZE=128, _compile=True)
-
-# Copied from transformers.models.mistral.modeling_mistral.MistralSdpaAttention with Mistral->Qwen2
 class HyperQwen2SdpaAttention(HyperQwen2Attention):
     """
     Qwen2 attention module using torch.nn.functional.scaled_dot_product_attention. This module inherits from
@@ -369,11 +359,17 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
         output_attentions: bool = False,
         use_cache: bool = False,
     )-> Tuple[paddle.Tensor, Optional[paddle.Tensor], Optional[Tuple[paddle.Tensor]]]:
-        bsz, q_len, _ = hidden_states.shape
+        bsz, q_len, _ = hidden_states.shape # (1, 74, 28, 128) bsz, q_len, self.num_heads, self.head_dim
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        try:
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
+        except:
+            hidden_states = hidden_states.astype('bfloat16')
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
         query_states = query_states.reshape([bsz, q_len, self.num_heads, self.head_dim]).transpose([0, 2, 1, 3])
         key_states = key_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose([0, 2, 1, 3])
@@ -381,21 +377,29 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            #kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            #cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            #key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            key_states = paddle.concat([past_key_value[0], key_states], axis=2)
+            value_states = paddle.concat([past_key_value[1], value_states], axis=2)
+        past_key_value = (key_states, value_states) if use_cache else None
+        # q k v [1, 28, 74, 128] [1, 4, 74, 128] [1, 4, 74, 128]
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         # add visual to kv
         length_each_img = image_embeds.shape[1]
-        image_embeds = self.v_kv_proj(image_embeds)
+        try:
+            image_embeds = self.v_kv_proj(image_embeds)
+        except:
+            image_embeds = self.v_kv_proj(image_embeds.astype('bfloat16'))
         image_start = 0
         context_layer = []                 
         for bi, media_starts in enumerate(media_offset):
@@ -440,29 +444,31 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
                     causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
                     full_mask = causal_mask
 
-
             # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
             # # Reference: https://github.com/pytorch/pytorch/issues/112577.
             # if curr_query_layer.device.type == "cuda" and full_mask is not None:
             #     curr_query_layer = curr_query_layer.contiguous()
             #     curr_key_layer = curr_key_layer.contiguous()
             #     curr_value_layer = curr_value_layer.contiguous()
-           
+
+            # full_mask.shape [1, 1, 72, 5175] # sum 196689
             attn_output = paddle.nn.functional.scaled_dot_product_attention(
-                curr_query_layer, # (batch, ..., sequence, dim)
-                curr_key_layer,
-                curr_value_layer,
-                attn_mask=full_mask, # (N, ..., L, S) A boolean mask where a value of True indicates that the element *should* take part in attention.
+                curr_query_layer.transpose([0, 2, 1, 3]), # (batch, ..., sequence, dim) # [1, 72, 28, 128], torch [1, 28, 74, 128] sum 18304.
+                curr_key_layer.transpose([0, 2, 1, 3]), # [1, 5175, 28, 128], torch [1, 28, 5177, 128] sum 1044480   mean 0.05615234  torch sum 1036288. mean 0.0559
+                curr_value_layer.transpose([0, 2, 1, 3]), # [1, 5175, 28, 128] , torch [1, 28, 5177, 128] sum -158720
+                attn_mask=full_mask.cast(curr_query_layer.dtype), # (N, ..., L, S) A boolean mask where a value of True indicates that the element *should* take part in attention.
                 dropout_p=self.attention_dropout if self.training else 0.0,
                 # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
                 is_causal=is_causal,
                 # enable_gqa=True, # gqa can not be used because mask requires XFORMERS and not support gqa
             ) # -> (N, ..., L, Ev)
+            # torch attn_output.shape [1, 28, 72, 128]
+            #attn_output = attn_output.transpose([0, 2, 1, 3])
             assert attn_output.shape[0] == 1
             context_layer.append(attn_output)
         attn_output = context_layer = paddle.concat(context_layer, axis=0)
 
-        attn_output = attn_output.transpose([0, 2, 1, 3])
+        #attn_output = attn_output.transpose([0, 2, 1, 3])
         attn_output = attn_output.reshape([bsz, q_len, self.hidden_size])
 
         attn_output = self.o_proj(attn_output)
@@ -481,28 +487,37 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> Tuple[paddle.Tensor, Optional[paddle.Tensor], Optional[Tuple[paddle.Tensor]]]:
-        if output_attentions:
-            # TODO: Improve this warning with e.g. `model.config.attn_implementation = "manual"` once this is implemented.
-            logger.warning_once(
-                "Qwen2Model is using Qwen2SdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
-                'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
-            )
-            return super().forward(
-                hidden_states=hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-            )
-        if self.is_hyper_enabled and image_embeds is not None:
+        ### TODO
+        # if output_attentions:
+        #     # TODO: Improve this warning with e.g. `model.config.attn_implementation = "manual"` once this is implemented.
+        #     logger.warning_once(
+        #         "Qwen2Model is using Qwen2SdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
+        #         'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
+        #     )
+        #     return super().forward(
+        #         hidden_states=hidden_states,
+        #         attention_mask=attention_mask,
+        #         position_ids=position_ids,
+        #         past_key_value=past_key_value,
+        #         output_attentions=output_attentions,
+        #         use_cache=use_cache,
+        #     )
+
+        if self.is_hyper_enabled and image_embeds is not None: # if 1:
+            # 必走这个分支
             return self.hyperattention(hidden_states, attention_mask, position_ids, image_embeds, media_offset, past_key_value, output_attentions, use_cache)
 
         bsz, q_len, _ = hidden_states.shape
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        try:
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
+        except:
+            hidden_states = hidden_states.astype('bfloat16')
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
         query_states = query_states.reshape([bsz, q_len, self.num_heads, self.head_dim]).transpose([0, 2, 1, 3])
         key_states = key_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose([0, 2, 1, 3])
@@ -510,14 +525,19 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            #kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            #cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            #key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            key_states = paddle.concat([past_key_value[0], key_states], axis=2)
+            value_states = paddle.concat([past_key_value[1], value_states], axis=2)
+        past_key_value = (key_states, value_states) if use_cache else None
+
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -538,7 +558,7 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
             query_states,
             key_states,
             value_states,
-            attn_mask=attention_mask,
+            attn_mask=attention_mask.astype(query_states.dtype),
             dropout_p=self.attention_dropout if self.training else 0.0,
             # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
             is_causal=self.is_causal and attention_mask is None and q_len > 1,
@@ -616,13 +636,14 @@ class HyperQwen2DecoderLayer(nn.Layer):
         else:
             image_embeds = media_offset = None
             media_kwargs = {}
+
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
+            hidden_states=hidden_states.cast(paddle.bfloat16),
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
-            output_attentions=output_attentions,
+            output_attentions=True, # TODO, paddlenlp默认是False，但是不返回self_attn_weights。这里output_attentions全局是false
             use_cache=use_cache,
             **media_kwargs,
         )
@@ -631,7 +652,10 @@ class HyperQwen2DecoderLayer(nn.Layer):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        try:
+            hidden_states = self.mlp(hidden_states.cast(paddle.bfloat16))
+        except:
+            hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -698,6 +722,34 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
+    @staticmethod
+    def _prepare_decoder_attention_mask(attention_mask, input_shape, past_key_values_length, dtype):
+        if attention_mask is not None:
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+            if len(attention_mask.shape) == 2:
+                expanded_attn_mask = _expand_2d_mask(attention_mask, dtype, tgt_length=input_shape[-1])
+                # For decoding phase in generation, seq_length = 1, we don't need to add causal mask
+                if input_shape[-1] > 1:
+                    combined_attention_mask = _make_causal_mask(
+                        input_shape,
+                        past_key_values_length=past_key_values_length,
+                    )
+                    expanded_attn_mask = expanded_attn_mask & combined_attention_mask
+            # [bsz, seq_len, seq_len] -> [bsz, 1, seq_len, seq_len]
+            elif len(attention_mask.shape) == 3:
+                expanded_attn_mask = attention_mask.unsqueeze(1).astype("bool")
+            # if attention_mask is already 4-D, do nothing
+            else:
+                expanded_attn_mask = attention_mask
+        else:
+            expanded_attn_mask = _make_causal_mask(
+                input_shape,
+                past_key_values_length=past_key_values_length,
+            )
+        # Convert bool attention_mask to float attention mask, which will be added to attention_scores later
+        expanded_attn_mask = paddle.where(expanded_attn_mask, 0.0, paddle.finfo(dtype).min).astype(dtype)
+        return expanded_attn_mask
+
     def forward(
         self,
         input_ids: paddle.Tensor = None,
@@ -730,64 +782,62 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
         else:
             raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
-        if self.gradient_checkpointing and self.training:
-            if use_cache:
-                logger.warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                )
-                use_cache = False
-
         past_key_values_length = 0
 
-        if use_cache:
-            use_legacy_cache = False #not isinstance(past_key_values, Cache)
-            #if use_legacy_cache:
-            #    past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_usable_length(seq_length)
+        # if use_cache:
+        #     use_legacy_cache = False #not isinstance(past_key_values, Cache)
+        #     #if use_legacy_cache:
+        #     #    past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        #     past_key_values_length = past_key_values.get_usable_length(seq_length)
 
-        if position_ids is None:
-            #device = input_ids.device if input_ids is not None else inputs_embeds.device
-            position_ids = paddle.arange(
-                past_key_values_length, seq_length + past_key_values_length, dtype=paddle.int64
-            )
-            position_ids = position_ids.unsqueeze(0).reshape([-1, seq_length])
-        else:
-            position_ids = position_ids.reshape([-1, seq_length]).astype(dtype="int64")
+        if past_key_values is None:
+            past_key_values = tuple([None] * len(self.layers))
+        # NOTE: to make cache can be clear in-time
+        past_key_values = list(past_key_values)
+
+        seq_length_with_past = seq_length
+        cache_length = 0
+        if past_key_values[0] is not None:
+            cache_length = past_key_values[0][0].shape[2]
+            seq_length_with_past += cache_length
+
+        # if position_ids is None:
+        #     position_ids = paddle.arange(
+        #         past_key_values_length, seq_length + past_key_values_length, dtype=paddle.int64
+        #     )
+        #     position_ids = position_ids.unsqueeze(0).reshape([-1, seq_length])
+        # else:
+        #     position_ids = position_ids.reshape([-1, seq_length]).astype(dtype="int64")
+        # if position_ids is None:
+        #     position_ids = paddle.arange(
+        #         past_key_values_length, seq_length + past_key_values_length, dtype=paddle.int64
+        #     )
+        #     position_ids = position_ids.unsqueeze(0)
+
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
-            is_padding_right = attention_mask[:, -1].sum().item() != batch_size
-            if is_padding_right:
-                raise ValueError(
-                    "You are attempting to perform batched generation with padding_side='right'"
-                    " this may lead to unexpected behaviour for Flash Attention version of Qwen2. Make sure to "
-                    " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
-                )
 
-        if self._attn_implementation == "flash_attention_2":
-            # 2d mask is passed through the layers
-            attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        elif self._attn_implementation == "sdpa" and not output_attentions:
-            # output_attentions=True can not be supported when using SDPA, and we fall back on
-            # the manual implementation that requires a 4D causal mask in all cases.
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window=self.config.sliding_window,
-            )
-        else:
-            # 4d mask is passed through the layers
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window=self.config.sliding_window,
-            )
+        attention_mask = None
+        # # embed positions
+        # import pdb; pdb.set_trace()
+        # if attention_mask is None:
+        #     # [bs, seq_len]
+        #     attention_mask = paddle.ones((batch_size, seq_length_with_past), dtype=paddle.bool)
+
+        # attention_mask = self._prepare_decoder_attention_mask(
+        #     attention_mask, (batch_size, seq_length), cache_length, inputs_embeds.dtype
+        # )  # [bs, 1, seq_len, seq_len]
+
+        # if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
+        #     is_padding_right = attention_mask[:, -1].sum().item() != batch_size
+        #     if is_padding_right:
+        #         raise ValueError(
+        #             "You are attempting to perform batched generation with padding_side='right'"
+        #             " this may lead to unexpected behaviour for Flash Attention version of Qwen2. Make sure to "
+        #             " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
+        #         )
 
         hidden_states = inputs_embeds
 
@@ -802,11 +852,16 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
-        next_decoder_cache = None
+        next_decoder_cache = () ### not none
 
-        for decoder_layer in self.layers:
+        # if attention_mask is not None:
+        #     print('attention_mask', attention_mask.shape, attention_mask.sum().item())
+
+        for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
 
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -814,15 +869,19 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
                 position_ids=position_ids,
                 image_embeds=image_embeds,
                 media_offset=media_offset,
-                past_key_value=past_key_values,
+                past_key_value=past_key_value, # not past_key_values
                 output_attentions=output_attentions,
                 use_cache=use_cache,
             )
 
+            # NOTE: clear outdate cache after it has been used for memory saving
+            past_key_value = past_key_values[idx] = None
+
             hidden_states = layer_outputs[0]
 
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+            # if use_cache:
+            #     next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+            next_decoder_cache = next_decoder_cache + (layer_outputs[-1],) if use_cache else None
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
@@ -833,9 +892,10 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
+        # next_cache = None
+        # if use_cache:
+        #     next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
+        next_cache = next_decoder_cache if use_cache else None
 
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
@@ -940,8 +1000,11 @@ class HyperQwen2ForCausalLM(Qwen2PreTrainedModel):
         )
 
         hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
-        logits = logits.astype(dtype="float32")
+        try:
+            logits = self.lm_head(hidden_states)
+        except:
+            logits = self.lm_head(hidden_states.cast(paddle.bfloat16))
+        logits = logits.cast(paddle.float32)
 
         loss = None
         if labels is not None:
@@ -970,35 +1033,42 @@ class HyperQwen2ForCausalLM(Qwen2PreTrainedModel):
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
+        batch_size, seq_length = input_ids.shape
+        attention_mask = paddle.ones((batch_size, seq_length), dtype=paddle.bool)
+
         # Omit tokens covered by past_key_values
         if past_key_values is not None:
-            if isinstance(past_key_values, MultiHeadAttention.Cache):
-                cache_length = past_key_values.get_seq_length()
-                past_length = past_key_values.seen_tokens
-                max_cache_length = past_key_values.get_max_length()
-            else:
-                cache_length = past_length = past_key_values[0][0].shape[2]
-                max_cache_length = None
-
-            # Keep only the unprocessed tokens:
-            # 1 - If the length of the attention_mask exceeds the length of input_ids, then we are in a setting where
-            # some of the inputs are exclusively passed as part of the cache (e.g. when passing input_embeds as
-            # input)
-            if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
-                input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
-            # 2 - If the past_length is smaller than input_ids', then input_ids holds all input tokens. We can discard
-            # input_ids based on the past_length.
-            elif past_length < input_ids.shape[1]:
+            past_length = past_key_values[0][0].shape[2]
+            if past_length < input_ids.shape[1]:
                 input_ids = input_ids[:, past_length:]
-            # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
+            
+            # if isinstance(past_key_values, MultiHeadAttention.Cache):
+            #     cache_length = past_key_values.get_seq_length()
+            #     past_length = past_key_values.seen_tokens
+            #     max_cache_length = past_key_values.get_max_length()
+            # else:
+            #     cache_length = past_length = past_key_values[0][0].shape[2]
+            #     max_cache_length = None
 
-            # If we are about to go beyond the maximum cache length, we need to crop the input attention mask.
-            if (
-                max_cache_length is not None
-                and attention_mask is not None
-                and cache_length + input_ids.shape[1] > max_cache_length
-            ):
-                attention_mask = attention_mask[:, -max_cache_length:]
+            # # Keep only the unprocessed tokens:
+            # # 1 - If the length of the attention_mask exceeds the length of input_ids, then we are in a setting where
+            # # some of the inputs are exclusively passed as part of the cache (e.g. when passing input_embeds as
+            # # input)
+            # if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
+            #     input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
+            # # 2 - If the past_length is smaller than input_ids', then input_ids holds all input tokens. We can discard
+            # # input_ids based on the past_length.
+            # elif past_length < input_ids.shape[1]:
+            #     input_ids = input_ids[:, past_length:]
+            # # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
+
+            # # If we are about to go beyond the maximum cache length, we need to crop the input attention mask.
+            # if (
+            #     max_cache_length is not None
+            #     and attention_mask is not None
+            #     and cache_length + input_ids.shape[1] > max_cache_length
+            # ):
+            #     attention_mask = attention_mask[:, -max_cache_length:]
 
         position_ids = kwargs.get("position_ids", None)
         if attention_mask is not None and position_ids is None:
