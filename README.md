@@ -298,10 +298,18 @@ python setup.py install
           <li><b>文生图</b></li>
         <ul>
            <li><a href="ppdiffusers/examples/stable_diffusion">Stable Diffusion</a></li>
+           <li><a href="ppdiffusers/ppdiffusers/pipelines/stable_diffusion_xl">SDXL</a></li>
            <li><a href="ppdiffusers/examples/dreambooth/README_sd3.md">Stable Diffusion 3 (SD3)</a></li>
             <li><a href="ppdiffusers/examples/controlnet">ControlNet</a></li>
             <li><a href="ppdiffusers/examples/t2i-adapter">T2I-Adapter</a></li>
             <li><a href="ppdiffusers/examples/text_to_image_laion400m">LDM</a></li>
+            <li><a href="ppdiffusers/ppdiffusers/pipelines/consistency_models">Consistency Models</a></li>
+            <li><a href="ppdiffusers/ppdiffusers/pipelines/deepfloyd_if">DeepFloyd IF</a></li>
+            <li><a href="ppdiffusers/ppdiffusers/pipelines/shap_e">Shap-E</a></li>
+            <li><a href="ppdiffusers/examples/kandinsky2_2">Kandinsky-2</a></li>
+            <li><a href="ppdiffusers/ppdiffusers/pipelines/wuerstchen">Würstchen</a></li>
+            <li><a href="ppdiffusers/ppdiffusers/pipelines/hotshot_xl">Hotshot-XL</a></li>
+            <li><a href="ppdiffusers/ppdiffusers/pipelines/latent_consistency_models">LCMs</a></li>
             <li><a href="ppdiffusers/ppdiffusers/pipelines/unidiffuser">Unidiffuser</a></li>
             <li><a href="ppdiffusers/examples/class_conditional_image_generation/DiT">DiT</a></li>
             <li><a href="ppdiffusers/examples/HunyuanDiT">HunyuanDiT</a></li>
@@ -309,10 +317,13 @@ python setup.py install
         </ul>
           <li><b>文生视频</b></li>
         <ul>
-           <li><a href="ppdiffusers/examples/lvdm">LVDM</a></li>
+           <li><a href="ppdiffusers/examples/text_to_video_lvdm">LVDM</a></li>
            <li><a href="ppdiffusers/examples/stable_video_diffusion">SVD</a></li>
            <li><a href="ppdiffusers/examples/AnimateAnyone">AnimateAnyone</a></li>
            <li><a href="ppdiffusers/examples/Open-Sora">OpenSora</a></li>
+           <li><a href="ppdiffusers/ppdiffusers/pipelines/animatediff">AnimateDiff</a></li>
+           <li><a href="ppdiffusers/ppdiffusers/pipelines/text_to_video_synthesis">zeroscope_v2_XL</a></li>
+           <li><a href="ppdiffusers/examples/cogvideo">CogVideoX</a></li>
         </ul>
         </ul>
           <li><b>音频生成</b></li>
