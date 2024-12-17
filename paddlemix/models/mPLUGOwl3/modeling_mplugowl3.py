@@ -1,11 +1,11 @@
 # Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -16,15 +16,16 @@ from threading import Thread
 
 import paddle
 import paddle.nn as nn
-import paddlenlp
 from paddlenlp.generation import TextIteratorStreamer
 from paddlenlp.transformers import Qwen2PretrainedModel
 
+from ...processors.mplugowl3_processing import (
+    mPLUGOwl3ImageProcessor,
+    mPLUGOwl3Processor,
+)
 from .configuration_mplugowl3 import mPLUGOwl3Config
-from .image_processing_mplugowl3 import mPLUGOwl3ImageProcessor
 from .modeling_hyper_qwen2 import HyperQwen2ForCausalLM
 from .modeling_navit_siglip import SigLipVisionTransformer
-from .processing_mplugowl3 import mPLUGOwl3Processor
 
 
 class mPLUGOwl3PreTrainedModel(Qwen2PretrainedModel):
@@ -40,21 +41,17 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
         self.vision_dim = self.vision_model.embed_dim
         self.embed_dim = self.config.hidden_size
         self.vision2text_model = nn.Sequential(
-            nn.Linear(self.vision_dim, self.embed_dim),
-            nn.GELU(),
-            nn.Linear(self.embed_dim, self.embed_dim)
+            nn.Linear(self.vision_dim, self.embed_dim), nn.GELU(), nn.Linear(self.embed_dim, self.embed_dim)
         )
         self.processor = None
-        self.terminators = ['<|im_end|>', '<|endoftext|>']
+        self.terminators = ["<|im_end|>", "<|endoftext|>"]
         self.vision_batch_size = config.vision_batch_size
 
     def init_vision_module(self):
-        #self.config.vision_config._attn_implementation = self.config.vision_config._attn_implementation
         self.config.vision_config._attn_implementation = "flash_attention_2"
         model = SigLipVisionTransformer(self.config.vision_config)
-
-        setattr(model, 'embed_dim', model.embeddings.embed_dim)
-        setattr(model, 'patch_size', model.embeddings.patch_size)
+        setattr(model, "embed_dim", model.embeddings.embed_dim)
+        setattr(model, "patch_size", model.embeddings.patch_size)
         return model
 
     def get_input_embeddings(self):
@@ -84,6 +81,8 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
             end_idx = min(B, i + vision_batch_size)
             tmp_hs = self.vision_model(pixel_values[start_idx:end_idx], output_hidden_states=True).hidden_states[-2]
             image_forward_out.append(tmp_hs)
+        # image_forward_out[0].sum()
+        # [7, 729, 1152] sum -872448.
         vision_embedding = paddle.concat(image_forward_out, axis=0)
         assert vision_embedding.shape[0] == B
         return vision_embedding
@@ -93,43 +92,38 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
             return None
         dtype = self.language_model.model.embed_tokens.weight.dtype
         image_embeds = self._small_batched_forward(pixel_values.to(dtype))
-        # image_embeds = self.vision_model(pixel_values.to(dtype), output_hidden_states=True).hidden_states[-2]
-        
+
         if self.vision2text_model is not None:
             image_embeds = self.vision2text_model(image_embeds)
+            # [7, 729, 3584] sum 134144.  mean 0.00735474
         else:
             pass
-     
+
         return image_embeds
 
     def forward(self, pixel_values=None, **kwargs):
         image_embeds = self.forward_image(pixel_values)
-        
-        return self.language_model(
-            image_embeds=image_embeds,
-            **kwargs
-        )
-    
+
+        return self.language_model(image_embeds=image_embeds, **kwargs)
+
     def _decode(self, input_ids, image_embeds, media_offset, tokenizer, attention_mask, decode_text=False, **kwargs):
         terminators = [tokenizer.convert_tokens_to_ids(i) for i in self.terminators]
-        
-        # ###  must add position_ids, paddlenlp bug
-        # batch_size, seq_length = attention_mask.shape
-        # position_ids = paddle.arange(seq_length).expand((batch_size, seq_length))
-        # ###
-        
+
+        # Note: must add position_ids, paddlenlp bug
+        batch_size, seq_length = input_ids.shape
+        position_ids = paddle.arange(seq_length).expand((batch_size, seq_length))
+
         output = self.language_model.generate(
             input_ids=input_ids,
             image_embeds=image_embeds,
             media_offset=media_offset,
             pad_token_id=0,
             eos_token_id=terminators,
-            #position_ids=position_ids,  ####
+            position_ids=position_ids,  # Note: must add position_ids
             attention_mask=attention_mask,
             **kwargs,
         )[0]
-        #output = output[:,input_ids.shape[1]:] # paddle no need this
-        print('_decode output', output)
+        # output = output[:,input_ids.shape[1]:] # paddle no need this
         if decode_text:
             return self._decode_text(output, tokenizer)
         return output
@@ -138,18 +132,18 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
         terminators = [tokenizer.convert_tokens_to_ids(i) for i in self.terminators]
         streamer = TextIteratorStreamer(tokenizer=tokenizer)
         generation_kwargs = {
-            'input_ids': input_ids,
-            'image_embeds': image_embeds,
-            'media_offset': media_offset,
-            'pad_token_id': 0,
-            'eos_token_id': terminators,
-            'streamer': streamer
+            "input_ids": input_ids,
+            "image_embeds": image_embeds,
+            "media_offset": media_offset,
+            "pad_token_id": 0,
+            "eos_token_id": terminators,
+            "streamer": streamer,
         }
         generation_kwargs.update(kwargs)
 
         thread = Thread(target=self.language_model.generate, kwargs=generation_kwargs)
         thread.start()
-    
+
         return streamer
 
     def _decode_text(self, result_ids, tokenizer):
@@ -185,10 +179,24 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
             image_embeds = self.forward_image(pixel_values)
 
             if stream:
-                result = self._decode_stream(input_ids=input_ids, image_embeds=image_embeds, media_offset=media_offset, tokenizer=tokenizer, **kwargs)
+                result = self._decode_stream(
+                    input_ids=input_ids,
+                    image_embeds=image_embeds,
+                    media_offset=media_offset,
+                    tokenizer=tokenizer,
+                    **kwargs,
+                )
             else:
-                result = self._decode(input_ids=input_ids, image_embeds=image_embeds, media_offset=media_offset, tokenizer=tokenizer, attention_mask=attention_mask, decode_text=decode_text, **kwargs)
-        
+                result = self._decode(
+                    input_ids=input_ids,
+                    image_embeds=image_embeds,
+                    media_offset=media_offset,
+                    tokenizer=tokenizer,
+                    attention_mask=attention_mask,
+                    decode_text=decode_text,
+                    **kwargs,
+                )
+
         return result
 
     def chat(
@@ -202,24 +210,26 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
         min_new_tokens=0,
         sampling=True,
         max_inp_length=8192,
-        system_prompt='',
+        system_prompt="",
         stream=False,
         max_slice_nums=None,
         use_image_id=None,
         **kwargs
     ):
-        cut_flag = kwargs.get('kwargs', True)
+        cut_flag = kwargs.get("kwargs", True)
         if processor is None:
             if self.processor is None:
                 processor = self.init_processor(tokenizer)
             else:
                 processor = self.processor
         inputs = processor(messages, images=images, videos=videos, cut_enable=cut_flag)
-        inputs.update({
-            'tokenizer': tokenizer,
-            'max_new_tokens': max_new_tokens,
-            # 'stream':True,
-        })
+        inputs.update(
+            {
+                "tokenizer": tokenizer,
+                "max_new_tokens": max_new_tokens,
+                # 'stream':True,
+            }
+        )
         if sampling:
             generation_config = {
                 "top_p": 0.8,
@@ -233,27 +243,22 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
                 "num_beams": 3,
                 # "repetition_penalty": 1.2,
             }
-            
-        if min_new_tokens > 0:
-            generation_config['min_new_tokens'] = min_new_tokens
 
-        generation_config.update(
-            (k, kwargs[k]) for k in generation_config.keys() & kwargs.keys()
-        )
+        if min_new_tokens > 0:
+            generation_config["min_new_tokens"] = min_new_tokens
+
+        generation_config.update((k, kwargs[k]) for k in generation_config.keys() & kwargs.keys())
         with paddle.no_grad():
-            res = self.generate(
-                **inputs,
-                stream=stream,
-                decode_text=True,
-                **generation_config
-            )
-        
+            res = self.generate(**inputs, stream=stream, decode_text=True, **generation_config)
+
         if stream:
+
             def stream_gen():
                 for text in res:
                     for term in self.terminators:
-                        text = text.replace(term, '')
+                        text = text.replace(term, "")
                     yield text
+
             return stream_gen()
 
         else:

@@ -1,55 +1,30 @@
 # Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import paddle
-import paddle.nn as nn
-from paddle.nn import MultiHeadAttention
-import paddlenlp
-
 from typing import List, Optional, Tuple, Union
 
+import paddle
+import paddle.nn as nn
+import paddlenlp
 from einops import rearrange, repeat
+from paddle.nn import MultiHeadAttention
+from paddlenlp.transformers.qwen2.modeling import Qwen2Attention
 
-# from paddlemix.models.flash_attn_utils import (
-#     has_flash_attn_func,
-#     is_flash_attn_available,
-# )
-#from paddle.nn.functional.flash_attention import flash_attention as flash_attn_func
-#from paddle.nn.functional.flash_attention import flash_attn_unpadded as flash_attn_varlen_func
+from paddlemix.utils.log import logger
 
 from ...activations import ACT2FN
 from .configuration_hyper_qwen2 import HyperQwen2Config
-
-try:
-    from einops import rearrange
-    use_flash_rotary = True
-    print("use flash_attn rotary")
-except ImportError:
-    use_flash_rotary = False
-    print("import flash_attn rotary fail")
-from paddlemix.utils.log import logger
-
-
-# def _get_unpad_data(attention_mask):
-#     seqlens_in_batch = attention_mask.sum(axis=-1, dtype="int32")
-#     paddle.utils.try_import("warnings").warn("Now, the return shape is inconsistent with torch when as_tuple is True")
-#     indices = paddle.nonzero(x=attention_mask.flatten(), as_tuple=False).flatten()
-#     max_seqlen_in_batch = seqlens_in_batch.max().item()
-#     cu_seqlens = paddle.nn.functional.pad(
-#         x=paddle.cumsum(x=seqlens_in_batch, axis=0, dtype="int32"), pad=(1, 0), pad_from_left_axis=False
-#     )
-#     return indices, cu_seqlens, max_seqlen_in_batch
 
 
 def is_casual_mask(attention_mask):
@@ -116,9 +91,7 @@ class Qwen2RotaryEmbedding(nn.Layer):
             paddle.arange(start=0, end=self.dim, step=2, dtype="int64").astype(dtype="float32") / self.dim
         )
         self.register_buffer(name="inv_freq", tensor=inv_freq, persistable=False)
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings, dtype=paddle.get_default_dtype()
-        )
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, dtype=paddle.get_default_dtype())
 
     def _set_cos_sin_cache(self, seq_len, dtype):
         self.max_seq_len_cached = seq_len
@@ -138,6 +111,7 @@ class Qwen2RotaryEmbedding(nn.Layer):
             self.sin_cached[:seq_len].to(dtype=x.dtype),
         )
 
+
 class RotaryEmbedding(paddle.nn.Layer):
     def __init__(self, dim, base=10000, use_fp32=False, use_outer_in_rope=False):
         super().__init__()
@@ -149,6 +123,7 @@ class RotaryEmbedding(paddle.nn.Layer):
         else:
             inv_freq = 1.0 / base ** (paddle.arange(start=0, end=dim, step=2).astype(dtype="float32") / dim)
             self.register_buffer(name="inv_freq", tensor=inv_freq)
+
         self._rotary_pos_emb_cache = None
         self._seq_len_cached = 0
         self.use_outer_in_rope = use_outer_in_rope
@@ -164,13 +139,12 @@ class RotaryEmbedding(paddle.nn.Layer):
             self._seq_len_cached = seqlen
             self._ntk_alpha_cached = ntk_alpha
             seq = paddle.arange(end=seqlen)
-            if self.use_outer_in_rope:
+            if 1:  # self.use_outer_in_rope:
                 freqs = paddle.outer(x=seq.astype(dtype=self.inv_freq.dtype), y=self.inv_freq)
-            else:
-                freqs = einsum("i , j -> i j", seq.astype(dtype=self.inv_freq.dtype), self.inv_freq)
+            # else:
+            #    freqs = einsum("i , j -> i j", seq.astype(dtype=self.inv_freq.dtype), self.inv_freq)
             emb = paddle.concat(x=(freqs, freqs), axis=-1)
-            from einops import rearrange
-
+            # emb [seq_length, .., dim]
             self._rotary_pos_emb_cache = rearrange(emb, "n d -> n 1 1 d")
 
     def forward(self, max_seq_len, offset=0, ntk_alpha=1.0):
@@ -240,15 +214,11 @@ def repeat_kv(hidden_states: paddle.Tensor, n_rep: int) -> paddle.Tensor:
     return hidden_states.reshape([batch, num_key_value_heads * n_rep, slen, head_dim])
 
 
-
-
-
 def _rotate_half(x):
     """
     change sign so the last dimension becomes [-odd, +even]
     """
-    from einops import rearrange
-    x = rearrange(x, '... (j d) -> ... j d', j=2)
+    x = rearrange(x, "... (j d) -> ... j d", j=2)
     x1, x2 = x.unbind(axis=-2)
     return paddle.concat(x=(-x2, x1), axis=-1)
 
@@ -272,7 +242,7 @@ def apply_rotary_pos_emb_core(t, freqs, use_fp32=False, debug=False):
     rot_dim = freqs.shape[-1]
     # ideally t_pass is empty so rotary pos embedding is applied to all tensor t
     t_, t_pass_ = t[..., :rot_dim], t[..., rot_dim:]
-    
+
     if use_fp32:
         t_ = t_.astype(dtype="float32")
         t_pass_ = t_pass_.astype(dtype="float32")
@@ -331,14 +301,14 @@ class HyperQwen2Attention(nn.Layer):
         self.is_hyper_enabled = is_hyper_enabled
         if self.is_hyper_enabled:
             self.v_kv_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim * 2, bias_attr=True)
-          
-            self.visual_cache={}
-        
+
+            self.visual_cache = {}
+
         self.use_flexattention = True
 
     def apply_mi_rope(self, key_layer, image_pos, length_each_img):
         # input shape should be [s b h d]
-        key_layer = rearrange(key_layer, 'b h s d -> s b h d')
+        key_layer = rearrange(key_layer, "b h s d -> s b h d")
         # if self.rotary_emb_core.inv_freq.device!=key_layer.device:
         #     self.rotary_emb_core.inv_freq = self.rotary_emb_core.inv_freq.to(key_layer.device)
         rotary_pos_emb_max_seq_len = self.config.max_position_embeddings
@@ -349,15 +319,15 @@ class HyperQwen2Attention(nn.Layer):
         if isinstance(rotary_pos_emb, tuple):
             rotary_pos_emb = rotary_pos_emb
         else:
-            rotary_pos_emb = ((rotary_pos_emb,) * 2)
+            rotary_pos_emb = (rotary_pos_emb,) * 2
 
         if rotary_pos_emb is not None:
             q_pos_emb, k_pos_emb = rotary_pos_emb
-            
-            k_pos_emb = repeat(k_pos_emb[image_pos], 'N_img b h d -> (N_img L) b h d', L=length_each_img) # N_img, dim
 
-            key_layer = apply_rotary_pos_emb_core(key_layer, k_pos_emb, use_fp32=True) # TODO difference
-        key_layer = rearrange(key_layer, 's b h d -> b h s d')
+            k_pos_emb = repeat(k_pos_emb[image_pos], "N_img b h d -> (N_img L) b h d", L=length_each_img)  # N_img, dim
+
+            key_layer = apply_rotary_pos_emb_core(key_layer, k_pos_emb, use_fp32=True)  # TODO difference
+        key_layer = rearrange(key_layer, "s b h d -> b h s d")
         return key_layer
 
 
@@ -368,7 +338,9 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
     SDPA API.
     """
 
-    def hyperattention(self,hidden_states: paddle.Tensor,
+    def hyperattention(
+        self,
+        hidden_states: paddle.Tensor,
         attention_mask: Optional[paddle.Tensor] = None,
         position_ids: Optional[paddle.Tensor] = None,
         image_embeds=None,
@@ -376,97 +348,108 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
         past_key_value: Optional[MultiHeadAttention.Cache] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-    )-> Tuple[paddle.Tensor, Optional[paddle.Tensor], Optional[Tuple[paddle.Tensor]]]:
-        bsz, q_len, _ = hidden_states.shape # (1, 74, 28, 128) bsz, q_len, self.num_heads, self.head_dim
+    ) -> Tuple[paddle.Tensor, Optional[paddle.Tensor], Optional[Tuple[paddle.Tensor]]]:
+        bsz, q_len, _ = hidden_states.shape  # (1, 74, 28, 128) bsz, q_len, self.num_heads, self.head_dim
 
         try:
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
         except:
-            hidden_states = hidden_states.astype('bfloat16')
+            hidden_states = hidden_states.astype("bfloat16")
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
 
         query_states = query_states.reshape([bsz, q_len, self.num_heads, self.head_dim]).transpose([0, 2, 1, 3])
         key_states = key_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose([0, 2, 1, 3])
-        value_states = value_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose([0, 2, 1, 3])
+        value_states = value_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose(
+            [0, 2, 1, 3]
+        )
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            #kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            # kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
             kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
+        # print('query_states, key_states', query_states.sum().item(), key_states.sum().item())
+        # 29952.0 492.0
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-        #print('query_states, key_states', query_states.shape, key_states.shape)
+        # print('query_states, key_states', query_states.sum().item(), key_states.sum().item())
+        # 18304.0 -776.0
+        # print('query_states, key_states', query_states.shape, key_states.shape)
         # [1, 28, 1, 128] [1, 4, 1, 128]
 
         if past_key_value is not None:
-            #cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-            #key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            # cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            # key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
             key_states = paddle.concat([past_key_value[0], key_states], axis=2)
             value_states = paddle.concat([past_key_value[1], value_states], axis=2)
         past_key_value = (key_states, value_states) if use_cache else None
-        #print('query_states key_states, value_states', query_states.sum().item(), key_states.sum().item(), value_states.sum().item())
-        #print('query_states key_states, value_states', query_states.shape, key_states.shape, value_states.shape)
+        # print('query_states key_states, value_states', query_states.sum().item(), key_states.sum().item(), value_states.sum().item())
+        # print('query_states key_states, value_states', query_states.shape, key_states.shape, value_states.shape)
         # q k v [1, 28, 74, 128] [1, 4, 74, 128] [1, 4, 74, 128]
         # q k v [1, 28, 1, 128] [1, 4, 75, 128] [1, 4, 75, 128]
 
-        # query_states key_states, value_states 18304.0 -792.0 -253.0
-        # query_states key_states, value_states 24832.0 123.5 -198.0
-        # query_states key_states, value_states -16896.0 552.0 -692.0
-        # query_states key_states, value_states -120.0 1200.0 -141.0
-
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
+        # -5440. -1712.
 
         # add visual to kv
         length_each_img = image_embeds.shape[1]
-        # [7, 729, 3584] sum 78848.
-        #import pdb; pdb.set_trace()
+        # [7, 729, 3584] sum 78336. mean 0.00430298
         try:
             image_embeds = self.v_kv_proj(image_embeds)
         except:
-            image_embeds = self.v_kv_proj(image_embeds.astype('bfloat16'))
-        #import pdb; pdb.set_trace()
+            image_embeds = self.v_kv_proj(image_embeds.astype("bfloat16"))
         # [7, 729, 1024] sum 184320.
         image_start = 0
-        context_layer = []                 
+        context_layer = []
         for bi, media_starts in enumerate(media_offset):
             num_images = media_starts.shape[0]
             if num_images > 0:
                 if q_len == 1:
-                    full_mask = paddle.ones((1,1,1, num_images*length_each_img + kv_seq_len)).astype(paddle.bool)
+                    full_mask = paddle.ones((1, 1, 1, num_images * length_each_img + kv_seq_len)).astype(paddle.bool)
                 else:
                     causal_mask = paddle.tril(paddle.ones([q_len, kv_seq_len])).astype(paddle.bool)
                     # 扩展维度以匹配 (bsz, 1, q_len, kv_seq_len)
                     causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
 
-                    matrix = paddle.arange(q_len).reshape([-1,1])
-                    t2vmask = ~(matrix<media_starts.reshape([1, -1])) 
-                    t2vmask = repeat(t2vmask, 'seq_t seq_v -> 1 1 seq_t (seq_v v_token)', v_token=length_each_img)
-                    full_mask = paddle.concat([t2vmask, causal_mask], axis=3) # unsqueeze batch dim (batch, 1, seq_q, seq_k)
+                    matrix = paddle.arange(q_len).reshape([-1, 1])
+                    t2vmask = ~(matrix < media_starts.reshape([1, -1]))
+                    t2vmask = repeat(t2vmask, "seq_t seq_v -> 1 1 seq_t (seq_v v_token)", v_token=length_each_img)
+                    full_mask = paddle.concat(
+                        [t2vmask, causal_mask], axis=3
+                    )  # unsqueeze batch dim (batch, 1, seq_q, seq_k)
 
-                curr_query_layer = query_states[bi:bi+1]
+                curr_query_layer = query_states[bi : bi + 1]
                 # order is sbhd
-                curr_visual_key_layer, curr_visual_value_layer = rearrange(image_embeds[image_start:image_start+num_images], 'BL Lv (H KV D) -> KV 1 H (BL Lv) D', KV=2, H=self.num_key_value_heads) # b h s d
+                curr_visual_key_layer, curr_visual_value_layer = rearrange(
+                    image_embeds[image_start : image_start + num_images],
+                    "BL Lv (H KV D) -> KV 1 H (BL Lv) D",
+                    KV=2,
+                    H=self.num_key_value_heads,
+                )  # b h s d
                 image_start += num_images
+                # print("curr_query_layer", bi, curr_visual_key_layer.sum().item(), curr_visual_value_layer.sum().item())
+                #  [1, 4, 5103, 128] 206848. -22400.0
 
-                curr_visual_key_layer = self.apply_mi_rope(curr_visual_key_layer, media_starts, length_each_img=length_each_img)
+                curr_visual_key_layer = self.apply_mi_rope(
+                    curr_visual_key_layer, media_starts, length_each_img=length_each_img
+                )
 
                 curr_visual_key_layer = repeat_kv(curr_visual_key_layer, self.num_key_value_groups)
                 curr_visual_value_layer = repeat_kv(curr_visual_value_layer, self.num_key_value_groups)
 
-                curr_key_layer = paddle.concat([curr_visual_key_layer, key_states[bi:bi+1]], axis=2)
-                curr_value_layer = paddle.concat([curr_visual_value_layer, value_states[bi:bi+1]], axis=2)
+                curr_key_layer = paddle.concat([curr_visual_key_layer, key_states[bi : bi + 1]], axis=2)
+                curr_value_layer = paddle.concat([curr_visual_value_layer, value_states[bi : bi + 1]], axis=2)
                 is_causal = False
             else:
                 # 执行无图attention
-                curr_query_layer = query_states[bi:bi+1]
-                curr_key_layer = key_states[bi:bi+1]
-                curr_value_layer = value_states[bi:bi+1]
+                curr_query_layer = query_states[bi : bi + 1]
+                curr_key_layer = key_states[bi : bi + 1]
+                curr_value_layer = value_states[bi : bi + 1]
                 is_causal = True if q_len > 1 else False
                 if is_causal:
                     full_mask = None
@@ -483,28 +466,31 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
             #     curr_key_layer = curr_key_layer.contiguous()
             #     curr_value_layer = curr_value_layer.contiguous()
 
-
-            # full_mask.shape [1, 1, 72, 5175] # sum 196689
+            # full_mask.shape [1, 1, 74, 5177] # sum 196689
             attn_output = paddle.nn.functional.scaled_dot_product_attention(
-                curr_query_layer.transpose([0, 2, 1, 3]), # (batch, ..., sequence, dim) # [1, 72, 28, 128], torch [1, 28, 74, 128] sum 18304.
-                curr_key_layer.transpose([0, 2, 1, 3]), # [1, 5175, 28, 128], torch [1, 28, 5177, 128] sum 1044480   mean 0.05615234  torch sum 1036288. mean 0.0559
-                curr_value_layer.transpose([0, 2, 1, 3]), # [1, 5175, 28, 128] , torch [1, 28, 5177, 128] sum -158720
-                attn_mask=full_mask.cast(curr_query_layer.dtype), # (N, ..., L, S) A boolean mask where a value of True indicates that the element *should* take part in attention.
+                curr_query_layer.transpose(
+                    [0, 2, 1, 3]
+                ),  # (batch, ..., sequence, dim) # [1, 74, 28, 128], torch [1, 28, 74, 128] sum 18304.
+                curr_key_layer.transpose(
+                    [0, 2, 1, 3]
+                ),  # [1, 5177, 28, 128], torch [1, 28, 5177, 128] sum 1044480   mean 0.05615234  torch sum 1036288. mean 0.0559
+                curr_value_layer.transpose([0, 2, 1, 3]),  # [1, 5177, 28, 128] , torch [1, 28, 5177, 128] sum -158720
+                attn_mask=full_mask.cast(
+                    curr_query_layer.dtype
+                ),  # (N, ..., L, S) A boolean mask where a value of True indicates that the element *should* take part in attention.
                 dropout_p=self.attention_dropout if self.training else 0.0,
                 # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
                 is_causal=is_causal,
                 # enable_gqa=True, # gqa can not be used because mask requires XFORMERS and not support gqa
-            ) # -> (N, ..., L, Ev)
+            )  # -> (N, ..., L, Ev)
             # torch attn_output.shape [1, 28, 72, 128]
             attn_output = attn_output.transpose([0, 2, 1, 3])
-            #import pdb; pdb.set_trace()
-
             assert attn_output.shape[0] == 1
             context_layer.append(attn_output)
         attn_output = context_layer = paddle.concat(context_layer, axis=0)
 
         attn_output = attn_output.transpose([0, 2, 1, 3])
-        #print('attn_output', attn_output.shape) # [1, 74, 28, 128] [1, 1, 28, 128]
+        # print('attn_output', attn_output.shape) # [1, 74, 28, 128] [1, 1, 28, 128]
         attn_output = attn_output.reshape([bsz, q_len, self.hidden_size])
 
         attn_output = self.o_proj(attn_output)
@@ -523,7 +509,7 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> Tuple[paddle.Tensor, Optional[paddle.Tensor], Optional[Tuple[paddle.Tensor]]]:
-        ### TODO
+        # TODO:
         # if output_attentions:
         #     # TODO: Improve this warning with e.g. `model.config.attn_implementation = "manual"` once this is implemented.
         #     logger.warning_once(
@@ -539,9 +525,18 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
         #         use_cache=use_cache,
         #     )
 
-        if self.is_hyper_enabled and image_embeds is not None: # if 1:
+        if self.is_hyper_enabled and image_embeds is not None:
             # 必走这个分支
-            return self.hyperattention(hidden_states, attention_mask, position_ids, image_embeds, media_offset, past_key_value, output_attentions, use_cache)
+            return self.hyperattention(
+                hidden_states,
+                attention_mask,
+                position_ids,
+                image_embeds,
+                media_offset,
+                past_key_value,
+                output_attentions,
+                use_cache,
+            )
 
         bsz, q_len, _ = hidden_states.shape
 
@@ -550,30 +545,31 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
         except:
-            hidden_states = hidden_states.astype('bfloat16')
+            hidden_states = hidden_states.astype("bfloat16")
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
 
         query_states = query_states.reshape([bsz, q_len, self.num_heads, self.head_dim]).transpose([0, 2, 1, 3])
         key_states = key_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose([0, 2, 1, 3])
-        value_states = value_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose([0, 2, 1, 3])
+        value_states = value_states.reshape([bsz, q_len, self.num_key_value_heads, self.head_dim]).transpose(
+            [0, 2, 1, 3]
+        )
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            #kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            # kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
             kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
-            #cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-            #key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            # cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            # key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
             key_states = paddle.concat([past_key_value[0], key_states], axis=2)
             value_states = paddle.concat([past_key_value[1], value_states], axis=2)
         past_key_value = (key_states, value_states) if use_cache else None
-
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -591,16 +587,15 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
         #     value_states = value_states.contiguous()
 
         attn_output = paddle.nn.functional.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            attn_mask=attention_mask.astype(query_states.dtype),
+            query_states.transpose([0, 2, 1, 3]),  # [1, 28, 74, 128] sum 21632.
+            key_states.transpose([0, 2, 1, 3]),  # [1, 28, 74, 128] sum 335872.
+            value_states.transpose([0, 2, 1, 3]),  # [1, 28, 74, 128] sum 1680.
+            attn_mask=attention_mask,
             dropout_p=self.attention_dropout if self.training else 0.0,
             # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
             is_causal=self.is_causal and attention_mask is None and q_len > 1,
         )
-
-        attn_output = attn_output.transpose([0, 2, 1, 3])
+        # [1, 74, 28, 128] sum 1408.
         attn_output = attn_output.reshape([bsz, q_len, self.hidden_size])
 
         attn_output = self.o_proj(attn_output)
@@ -608,12 +603,11 @@ class HyperQwen2SdpaAttention(HyperQwen2Attention):
         return attn_output, None, past_key_value
 
 
-from paddlenlp.transformers.qwen2.modeling import Qwen2Attention
 # Original Attention of Qwen2
 QWEN2_ATTENTION_CLASSES = {
     "eager": Qwen2Attention,
-    "flash_attention_2": Qwen2Attention, #Qwen2FlashAttention2,
-    "sdpa": Qwen2Attention, #Qwen2SdpaAttention,
+    "flash_attention_2": Qwen2Attention,  # Qwen2FlashAttention2,
+    "sdpa": Qwen2Attention,  # Qwen2SdpaAttention,
 }
 
 
@@ -627,11 +621,12 @@ class HyperQwen2DecoderLayer(nn.Layer):
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
                 "unexpected results may be encountered."
             )
-        self.is_hyper_enabled = (layer_idx+1) in config.hyper_layers
-        if self.is_hyper_enabled:
+        self.is_hyper_enabled = (layer_idx + 1) in config.hyper_layers
+        # print('layer_idx', layer_idx, self.is_hyper_enabled)
+        if 1:  # self.is_hyper_enabled:
             self.self_attn = HyperQwen2SdpaAttention(config, layer_idx, is_hyper_enabled=self.is_hyper_enabled)
         else:
-            #self.self_attn = QWEN2_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
+            # self.self_attn = QWEN2_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
             self.self_attn = QWEN2_ATTENTION_CLASSES["flash_attention_2"](config, layer_idx)
 
         self.mlp = Qwen2MLP(config)
@@ -664,26 +659,30 @@ class HyperQwen2DecoderLayer(nn.Layer):
         """
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        
+
         # Shared LayerNorm
         if image_embeds is not None and self.is_hyper_enabled:
+            # 134144
             image_embeds = self.input_layernorm(image_embeds)
+            # 78336.
             media_kwargs = {"image_embeds": image_embeds, "media_offset": media_offset}
         else:
             image_embeds = media_offset = None
             media_kwargs = {}
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states.cast(paddle.bfloat16),
+        # hidden_states.sum 76.50000000
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(  # -704. 2080. (48128., 240.)
+            hidden_states=hidden_states.cast(paddle.bfloat16),  # [1, 74, 3584] sum -704.
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
-            output_attentions=True, # TODO, paddlenlp默认是False，但是不返回self_attn_weights。这里output_attentions全局是false
+            output_attentions=True,  # TODO, paddlenlp默认是False，但是不返回self_attn_weights。output_attentions全局是false，这里改成True是无影响的
             use_cache=use_cache,
-            **media_kwargs,
+            **media_kwargs,  # {}
         )
         hidden_states = residual + hidden_states
+        # -1.71093750 + -704.
 
         # Fully Connected
         residual = hidden_states
@@ -711,8 +710,8 @@ class Qwen2PreTrainedModel(paddlenlp.transformers.model_utils.PretrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["HyperQwen2DecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
-    _supports_flash_attn_2 = True
-    _supports_sdpa = True
+    # _supports_flash_attn_2 = True
+    # _supports_sdpa = True
     _supports_cache_class = True
 
     def _init_weights(self, layer):
@@ -745,12 +744,12 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
         self.layers = nn.LayerList(
             [HyperQwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self._attn_implementation = 'flash_attention_2' #config._attn_implementation
+        self._attn_implementation = "flash_attention_2"  # config._attn_implementation
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
-        #self.post_init()
+        # self.post_init()
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -834,7 +833,7 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
         past_key_values_length = seq_length
         cache_length = 0
         if past_key_values[0] is not None:
-            cache_length = past_key_values[0][0].shape[1] # 
+            cache_length = past_key_values[0][0].shape[1]  #
             past_key_values_length += cache_length
 
         # print('position_ids  before', position_ids)
@@ -844,7 +843,7 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
             )
             position_ids = position_ids.unsqueeze(0).reshape([-1, seq_length])
         else:
-           position_ids = position_ids.reshape([-1, seq_length]).astype(dtype="int64")
+            position_ids = position_ids.reshape([-1, seq_length]).astype(dtype="int64")
 
         # print('position_ids', position_ids)
         # print('seq_length', seq_length)
@@ -863,15 +862,12 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
             beam_factor = batch_size // len(media_offset)
             assert batch_size % len(media_offset) == 0
             media_offset = media_offset * beam_factor
-            image_embeds = repeat(image_embeds, 'B L D -> (factor B) L D', factor=beam_factor)
+            image_embeds = repeat(image_embeds, "B L D -> (factor B) L D", factor=beam_factor)
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
-        next_decoder_cache = () ### not none
-
-        # if attention_mask is not None:
-        #     print('attention_mask', attention_mask.shape, attention_mask.sum().item())
+        next_decoder_cache = ()  # not none
 
         for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
@@ -885,7 +881,7 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
                 position_ids=position_ids,
                 image_embeds=image_embeds,
                 media_offset=media_offset,
-                past_key_value=past_key_value, # not past_key_values
+                past_key_value=past_key_value,  # not past_key_values
                 output_attentions=output_attentions,
                 use_cache=use_cache,
             )
@@ -895,8 +891,6 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
 
             hidden_states = layer_outputs[0]
 
-            # if use_cache:
-            #     next_decoder_cache = layer_outputs[2 if output_attentions else 1]
             next_decoder_cache = next_decoder_cache + (layer_outputs[-1],) if use_cache else None
 
             if output_attentions:
@@ -908,9 +902,6 @@ class HyperQwen2Model(Qwen2PreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        # next_cache = None
-        # if use_cache:
-        #     next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         next_cache = next_decoder_cache if use_cache else None
 
         if not return_dict:
@@ -933,7 +924,7 @@ class HyperQwen2ForCausalLM(Qwen2PreTrainedModel):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias_attr=False)
 
         # Initialize weights and apply final processing
-        #self.post_init()
+        # self.post_init()
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -1002,25 +993,25 @@ class HyperQwen2ForCausalLM(Qwen2PreTrainedModel):
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
+            input_ids=input_ids,  # [1, 74] # [1, 1]
+            attention_mask=attention_mask,  # [1, 74] # [1, 75]
+            position_ids=position_ids,  # [1, 74] # [1, 1]
             past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            image_embeds=image_embeds,
-            media_offset=media_offset,
+            inputs_embeds=inputs_embeds,  # none
+            image_embeds=image_embeds,  # [7, 729, 3584] sum 134144.
+            media_offset=media_offset,  # [[18, 24, 30, 36, 42, 48, 54]]
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            return_dict=True,  #
         )
 
-        hidden_states = outputs[0]
+        hidden_states = outputs[0]  # sum 6656 mean 0.02502441
         try:
             logits = self.lm_head(hidden_states)
         except:
             logits = self.lm_head(hidden_states.cast(paddle.bfloat16))
-        logits = logits.cast(paddle.float32)
+        logits = logits.cast(paddle.float32)  # sum -5314405 mean -0.47356287
 
         loss = None
         if labels is not None:
@@ -1050,55 +1041,12 @@ class HyperQwen2ForCausalLM(Qwen2PreTrainedModel):
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
         batch_size, seq_length = input_ids.shape
-        attention_mask = paddle.ones((batch_size, seq_length), dtype=paddle.bool)
+        position_ids = kwargs.get("position_ids", paddle.arange(seq_length).expand((batch_size, seq_length)))
+        attention_mask = kwargs.get("attention_mask", None)
+        if past_key_values:
+            input_ids = input_ids[:, -1].unsqueeze(axis=-1)
+            position_ids = position_ids[:, -1].unsqueeze(-1)
 
-        # Omit tokens covered by past_key_values
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[1] # [1, 74, 4, 128] seq_len 74
-            #print('input_ids before omitting', input_ids)
-            #import pdb; pdb.set_trace()
-            if past_length < input_ids.shape[1]:
-                input_ids = input_ids[:, past_length:]
-            #print('input_ids', input_ids.shape, input_ids.sum().item())
-            
-            # if isinstance(past_key_values, MultiHeadAttention.Cache):
-            #     cache_length = past_key_values.get_seq_length()
-            #     past_length = past_key_values.seen_tokens
-            #     max_cache_length = past_key_values.get_max_length()
-            # else:
-            #     cache_length = past_length = past_key_values[0][0].shape[2]
-            #     max_cache_length = None
-
-            # # Keep only the unprocessed tokens:
-            # # 1 - If the length of the attention_mask exceeds the length of input_ids, then we are in a setting where
-            # # some of the inputs are exclusively passed as part of the cache (e.g. when passing input_embeds as
-            # # input)
-            # if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
-            #     input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
-            # # 2 - If the past_length is smaller than input_ids', then input_ids holds all input tokens. We can discard
-            # # input_ids based on the past_length.
-            # elif past_length < input_ids.shape[1]:
-            #     input_ids = input_ids[:, past_length:]
-            # # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
-
-            # # If we are about to go beyond the maximum cache length, we need to crop the input attention mask.
-            # if (
-            #     max_cache_length is not None
-            #     and attention_mask is not None
-            #     and cache_length + input_ids.shape[1] > max_cache_length
-            # ):
-            #     attention_mask = attention_mask[:, -max_cache_length:]
-
-        #print('attention_mask ////', attention_mask.shape, attention_mask.sum().item())
-        position_ids = kwargs.get("position_ids", None)
-        if attention_mask is not None and position_ids is None:
-            # create position_ids on the fly for batch generation
-            position_ids = attention_mask.astype(dtype="int64").cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
-
-        #print('position_ids ////', position_ids)
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {"inputs_embeds": inputs_embeds}
@@ -1111,8 +1059,8 @@ class HyperQwen2ForCausalLM(Qwen2PreTrainedModel):
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
-                'image_embeds': kwargs.get('image_embeds'),
-                'media_offset': kwargs.get('media_offset'),
+                "image_embeds": kwargs.get("image_embeds"),
+                "media_offset": kwargs.get("media_offset"),
             }
         )
         return model_inputs

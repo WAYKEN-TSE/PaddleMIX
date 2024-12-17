@@ -6,8 +6,6 @@
 
 | Model              |
 |--------------------|
-<!-- | mPLUG/mPLUG-Owl3-1B-241014  |
-| mPLUG/mPLUG-Owl3-2B-241014  | -->
 | mPLUG/mPLUG-Owl3-7B-241101  |
 
 注意：与huggingface权重同名，但权重为paddle框架的Tensor，使用`xxx.from_pretrained("mPLUG/mPLUG-Owl3-7B-241101")`即可自动下载该权重文件夹到缓存目录。
@@ -26,14 +24,8 @@
 ### 推理
 ```bash
 # 图片理解
-python paddlemix/examples/mPLUG_Owl3/run_inference.py \
-
-# 视频理解
-python paddlemix/examples/mPLUG_Owl3/run_inference_video.py \
+CUDA_VISIBLE_DEVICES=0 python paddlemix/examples/mPLUG_Owl3/run_inference.py \
 ```
-
-### 效果展示
-
 
 
 ### 参考文献

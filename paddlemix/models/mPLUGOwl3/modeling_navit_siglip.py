@@ -12,17 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-
-import paddle
-
-""" PyTorch Siglip model. """
 import math
+import os
 import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 import numpy as np
+import paddle
 from paddle import nn
 from paddlenlp.transformers import PretrainedConfig
 from paddlenlp.transformers.activations import ACT2FN
@@ -35,8 +32,6 @@ from paddlenlp.transformers.model_utils import PretrainedModel
 
 from paddlemix.models.flash_attn_utils import has_flash_attn_func
 from paddlemix.utils.initializer import _calculate_fan_in_and_fan_out
-
-from .bert_padding import pad_input, unpad_input
 
 flash_attn_func, flash_attn_varlen_func = has_flash_attn_func()
 
@@ -138,20 +133,6 @@ class SigLipVisionConfig(PretrainedConfig):
             )
 
         return cls.from_dict(config_dict, **kwargs)
-
-
-# _CHECKPOINT_FOR_DOC = 'google/siglip-base-patch16-224'
-
-
-def _get_unpad_data(attention_mask):
-    seqlens_in_batch = attention_mask.sum(axis=-1, dtype="int32")
-    paddle.utils.try_import("warnings").warn("Now, the return shape is inconsistent with torch when as_tuple is True")
-    indices = paddle.nonzero(x=attention_mask.flatten(), as_tuple=False).flatten()
-    max_seqlen_in_batch = seqlens_in_batch.max().item()
-    cu_seqlens = nn.functional.pad(
-        x=paddle.cumsum(x=seqlens_in_batch, axis=0, dtype="int32"), pad=(1, 0), pad_from_left_axis=False
-    )
-    return indices, cu_seqlens, max_seqlen_in_batch
 
 
 def _trunc_normal_(tensor, mean, std, a, b):
@@ -486,33 +467,9 @@ class SiglipFlashAttention2(SigLipAttention):
         # Contains at least one padding token in the sequence
         causal = self.is_causal and query_length != 1
 
-        head_dim = query_states.shape[-1]
-        softmax_scale = head_dim**-0.5  # TODO: 需要手动加上
-
         if attention_mask is not None:
-            batch_size = query_states.shape[0]  # [2, 3383, 16, 128]
+            raise NotImplementedError("Currently only support single image infer and attention_mask is none")
 
-            query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = unpad_input(
-                query_states, key_states, value_states, attention_mask, query_length
-            )
-
-            cu_seqlens_q, cu_seqlens_k = cu_seq_lens
-            max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
-
-            attn_output_unpad = flash_attn_varlen_func(  # TODO: flash_attn_unpadded
-                query_states,  # [5998, 16, 128]
-                key_states,  # [5998, 8, 128]
-                value_states,  # [5998, 8, 128]
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_k=cu_seqlens_k,
-                max_seqlen_q=max_seqlen_in_batch_q,
-                max_seqlen_k=max_seqlen_in_batch_k,
-                scale=softmax_scale,  # not softmax_scale=
-                dropout=dropout,
-                causal=causal,
-            )[0]
-
-            attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
         else:
             attn_output = flash_attn_func(
                 query_states,
@@ -641,34 +598,6 @@ class SigLipPreTrainedModel(PretrainedModel):
                 module.weight.set_value(paddle.ones_like(module.weight))
 
 
-SIGLIP_START_DOCSTRING = """
-    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
-    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
-    etc.)
-    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) subclass.
-    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
-    and behavior.
-    Parameters:
-        config ([`SiglipVisionConfig`]): Model configuration class with all the parameters of the model.
-            Initializing with a config file does not load the weights associated with the model, only the
-            configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
-"""
-SIGLIP_VISION_INPUTS_DOCSTRING = """
-    Args:
-        pixel_values (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
-            Pixel values. Padding will be ignored by default should you provide it. Pixel values can be obtained using
-            [`AutoImageProcessor`]. See [`CLIPImageProcessor.__call__`] for details.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
-
-
 class SigLipEncoder(nn.Layer):
     """
     Transformer encoder consisting of `config.num_hidden_layers` self attention layers. Each layer is a
@@ -723,12 +652,7 @@ class SigLipEncoder(nn.Layer):
         for encoder_layer in self.layers:
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
-            if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
-                    encoder_layer.__call__, hidden_states, attention_mask, output_attentions
-                )
-            else:
-                layer_outputs = encoder_layer(hidden_states, attention_mask, output_attentions=output_attentions)
+            layer_outputs = encoder_layer(hidden_states, attention_mask, output_attentions=output_attentions)
             hidden_states = layer_outputs[0]
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
@@ -740,57 +664,6 @@ class SigLipEncoder(nn.Layer):
         return BaseModelOutput(
             last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions
         )
-
-
-# # Copied from transformers.models.llama.modeling_llama._prepare_4d_causal_attention_mask_with_cache_position
-# def _prepare_4d_causal_attention_mask_with_cache_position(
-#     attention_mask: paddle.Tensor,
-#     sequence_length: int,
-#     target_length: int,
-#     dtype: paddle.dtype,
-#     min_dtype: float,
-#     cache_position: paddle.Tensor,
-#     batch_size: int,
-# ):
-#     """
-#     Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
-#     `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
-
-#     Args:
-#         attention_mask (`paddle.Tensor`):
-#             A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape `(batch_size, 1, query_length, key_value_length)`.
-#         sequence_length (`int`):
-#             The sequence length being processed.
-#         target_length (`int`):
-#             The target length: when generating with static cache, the mask should be as long as the static cache, to account for the 0 padding, the part of the cache that is not filled yet.
-#         dtype (`paddle.dtype`):
-#             The dtype to use for the 4D attention mask.
-#         min_dtype (`float`):
-#             The minimum value representable with the dtype `dtype`.
-#         cache_position (`paddle.Tensor`):
-#             Indices depicting the position of the input sequence tokens in the sequence.
-#         batch_size (`paddle.Tensor`):
-#             Batch size.
-#     """
-#     if attention_mask is not None and attention_mask.dim() == 4:
-#         # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-#         causal_mask = attention_mask
-#     else:
-#         causal_mask = paddle.full([sequence_length, target_length], fill_value=min_dtype, dtype=dtype)
-#         if sequence_length != 1:
-#             causal_mask = paddle.triu(x=causal_mask, diagonal=1)
-#         causal_mask *= paddle.arange(target_length) > cache_position.reshape([-1, 1])
-#         causal_mask = causal_mask[None, None, :, :].expand(shape=[batch_size, 1, -1, -1])
-#         if attention_mask is not None:
-#             causal_mask = causal_mask.clone()
-#             mask_length = tuple(attention_mask.shape)[-1]
-#             padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
-#             padding_mask = padding_mask == 0
-#             causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-#                 mask=padding_mask, value=min_dtype
-#             )
-
-#     return causal_mask
 
 
 class SigLipVisionTransformer(SigLipPreTrainedModel):
@@ -806,7 +679,6 @@ class SigLipVisionTransformer(SigLipPreTrainedModel):
         self.encoder = SigLipEncoder(config)
         self.post_layernorm = nn.LayerNorm(normalized_shape=embed_dim, epsilon=config.layer_norm_eps)
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
-
         # self.post_init()
 
     def get_input_embeddings(self) -> nn.Layer:
