@@ -36,6 +36,7 @@ from paddlenlp.transformers.image_processing_utils import (
     BatchFeature,
 )
 from PIL import Image
+from paddle.vision.transforms import Resize
 
 
 def recursive_converter(converter, value):
@@ -236,13 +237,15 @@ class AnchorResize(paddle.nn.Layer):
         assert self.anchor_strategy in available_anchor_strategy
 
     def resize_global(self, img):
+        transform = Resize(size=self.image_size,interpolation=self.interpolation)
+        return transform(img)
         #return F.resize(img, self.image_size, self.interpolation, max_size=None, antialias=self.antialias)
-        image_np = np.array(img)
-        image_tensor = paddle.to_tensor(image_np, dtype="float32")
-        image_tensor = image_tensor.transpose([2, 0, 1])  # 变成 (3, 500, 500)
-        if self.interpolation == "bilinear" or "bicubic":
-            image_tensor = image_tensor.unsqueeze(0)  # 变成 (1, 3, 500, 500)
-        return F.interpolate(image_tensor, size=self.image_size, mode=self.interpolation, align_corners=False)[0]
+        # image_np = np.array(img)
+        # image_tensor = paddle.to_tensor(image_np, dtype="float32")
+        # image_tensor = image_tensor.transpose([2, 0, 1])  # 变成 (3, 500, 500)
+        # if self.interpolation == "bilinear" or "bicubic":
+        #     image_tensor = image_tensor.unsqueeze(0)  # 变成 (1, 3, 500, 500)
+        # return F.interpolate(image_tensor, size=self.image_size, mode=self.interpolation, align_corners=False)[0]
 
     def forward(self, img, skip_resize=False):
         """
@@ -272,17 +275,19 @@ class AnchorResize(paddle.nn.Layer):
             # for debug
             return selected_anchor
         #return F.resize(img, [target_size[1],target_size[0]], self.interpolation, max_size=None, antialias=self.antialias), selected_anchor
-        image_np = np.array(img)
-        image_tensor = paddle.to_tensor(image_np, dtype="float32")
-        image_tensor = image_tensor.transpose([2, 0, 1])  # 变成 (3, 500, 500)
-        if self.interpolation == "bilinear" or "bicubic":
-            image_tensor = image_tensor.unsqueeze(0)  # 变成 (1, 3, 500, 500)
-        return (
-            F.interpolate(
-                image_tensor, size=[target_size[1], target_size[0]], mode=self.interpolation, align_corners=False
-            )[0],
-            selected_anchor,
-        )
+        # image_np = np.array(img)
+        # image_tensor = paddle.to_tensor(image_np, dtype="float32")
+        # image_tensor = image_tensor.transpose([2, 0, 1])  # 变成 (3, 500, 500)
+        # if self.interpolation == "bilinear" or "bicubic":
+        #     image_tensor = image_tensor.unsqueeze(0)  # 变成 (1, 3, 500, 500)
+        transform = Resize(size=[target_size[1],target_size[0]],interpolation=self.interpolation)
+        return (transform(img),selected_anchor)
+        # return (
+        #     F.interpolate(
+        #         image_tensor, size=[target_size[1], target_size[0]], mode=self.interpolation, align_corners=False
+        #     )[0],
+        #     selected_anchor,
+        # )
 
     def __repr__(self) -> str:
         detail = f"(size={self.image_size}, anchor={self.anchors}, interpolation={self.interpolation.value}, antialias={self.antialias})"
