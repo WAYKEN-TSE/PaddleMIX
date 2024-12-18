@@ -81,8 +81,7 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
             end_idx = min(B, i + vision_batch_size)
             tmp_hs = self.vision_model(pixel_values[start_idx:end_idx], output_hidden_states=True).hidden_states[-2]
             image_forward_out.append(tmp_hs)
-        # image_forward_out[0].sum()
-        # [7, 729, 1152] sum -872448.
+
         vision_embedding = paddle.concat(image_forward_out, axis=0)
         assert vision_embedding.shape[0] == B
         return vision_embedding
@@ -95,7 +94,6 @@ class mPLUGOwl3Model(mPLUGOwl3PreTrainedModel):
 
         if self.vision2text_model is not None:
             image_embeds = self.vision2text_model(image_embeds)
-            # [7, 729, 3584] sum 134144.  mean 0.00735474
         else:
             pass
 
